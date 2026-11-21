@@ -1,0 +1,37 @@
+# Guest functions the runtime may replace (src/runtime/hooks.*). One per line: a symbol name (as in the RPX's .symtab)
+# or a 0x address. dt_recomp emits each as orig_sub_X and makes sub_X call the hook when one is installed.
+
+# Scaleform GFx: the movie loader and ActionScript's calls into the game (PC Settings in the game's menus).
+OpenFile__14FGFxFileOpenerFPCciT2
+__ct__8FGFxFileFPCcPUci
+Callback__21FGFxExternalInterfaceFPQ3_9Scaleform3GFx5MoviePCcPCQ3_9Scaleform3GFx5ValueUi
+
+# The game's per-frame tick on the Game Thread: plays the settings page's sounds (the game's own UI sounds) and times
+# out its requests to pause.
+Tick__11UGameEngineFf
+
+# Which of the game's movies are open, and full-screen Bink movies: the settings page opens on top of the pause menu and
+# never during a movie or loading (game_ui.h).
+Load__15UGFxMoviePlayerFRC7FStringUi
+Start__15UGFxMoviePlayerFUi
+Close__15UGFxMoviePlayerFUi
+BinkDecodeFrame__20FFullScreenMovieBinkFP4BINK
+
+# The engine's text lookup: text that names Wii U buttons is rewritten for the device in use (host/button_text.*).
+Localize__FPCwN31Ui
+
+# The game's Coalesced ini and localisation, decrypted at boot: controller layouts and action names (assets/coalesced.*).
+appDecryptData__FPUcUl
+
+# Script calls: the game's Options entries open the PC page instead (gfx_hooks.cpp).
+ProcessEvent__7UObjectFP9UFunctionPvT2
+
+# Canvas text (all of it goes through here): the "SKIP" prompt's button glyph, drawn in the engine's SkipFont.
+DrawStringZ__FP7FCanvasfN22PCwP5UFontRC12FLinearColorN32PCf23ESimpleElementBlendModeUiN22RC15FFontRenderInfo
+
+# WorldInfo.IsConsoleBuild: false while a D3HUD's PostBeginPlay runs, so the HUD makes the game's PC mouse cursor
+# (gfx_hooks.cpp, the menus' mouse pointer).
+execIsConsoleBuild__10AWorldInfoFR6FFramePv
+
+# The engine's exit request (the PC title menu's Exit, shown in keyboard mode): dt-port quits (gfx_hooks.cpp).
+appRequestExit__FUi

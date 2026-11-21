@@ -1,0 +1,16 @@
+diff --git a/wiiurpxtool.cpp b/wiiurpxtool.cpp
+index d6a34da..0684a09 100644
+--- a/wiiurpxtool.cpp
++++ b/wiiurpxtool.cpp
+@@ -2,7 +2,10 @@
+ // Licensed under the terms of the GNU GPL, version 3
+ // http://www.gnu.org/licenses/gpl-3.0.txt
+ 
+-#include <io.h>
++#ifdef _WIN32
++#include <io.h>
++#endif
++#include <stdio.h>
+ #include <string.h>
+ #include <vector>
+ #include <algorithm> 

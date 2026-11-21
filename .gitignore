@@ -1,0 +1,58 @@
+# Allowlist: ignore everything at the top level, then re-include only our own files.
+# game/ (copyrighted game data), tools/ and ref/ (third-party clones and builds) stay out.
+/*
+!/.gitignore
+!/src/
+# The project's documents and CI
+!/LICENSE
+!/NOTICE.md
+!/README.md
+!/BUILDING.md
+!/.github/
+
+# --- Never commit game code or data, even inside src/ ---
+# Game binaries and disc/package formats
+*.wua
+*.wud
+*.wux
+*.rpx
+*.rpl
+*.elf
+*.xex
+
+# Game packages and content extracted from them (UE3 packages, texture/sound caches, Scaleform movies)
+*.xxx
+*.upk
+*.tfc
+*.pck
+*.bnk
+*.gfx
+*.swf
+extracted/
+
+# Recompiler output (contains translated game code)
+generated/
+**/generated/
+ppc_recomp.*.cpp
+ppc_func_mapping.*
+ppc_config.h
+
+# Bulk dumps of the game's symbol table
+src/notes/symbols.csv
+
+# Screenshots of the running game (frames of its movies and art)
+src/notes/screenshots/
+
+# Disassembly/decompilation exports and Ghidra projects
+*.gpr
+*.rep/
+*.s
+*.asm
+
+# Build and tooling noise
+build/
+__pycache__/
+*.pyc
+
+# Reports the analysis tools write from the game (src/tools/rpx_report.py): never committed
+src/notes/rpx_report.md
