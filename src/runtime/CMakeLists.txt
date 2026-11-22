@@ -250,6 +250,9 @@ add_custom_command(OUTPUT "${DT_CACHE_VERSION_HEADER}.stamp" BYPRODUCTS "${DT_CA
     COMMENT "Hashing the shader translator and renderer sources" VERBATIM)
 list(APPEND DT_RUNTIME_SOURCES "${DT_CACHE_VERSION_HEADER}.stamp")
 list(APPEND DT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../common/rpx_decompress.cpp")
+if(WIN32)
+    list(APPEND DT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.rc")  # the application icon
+endif()
 add_executable(dt_port ${DT_RUNTIME_SOURCES})
 target_include_directories(dt_port PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../common")
 if(DT_GAME_MODULE)
@@ -318,6 +321,9 @@ if(DT_SETUP)
 
     file(GLOB DT_SETUP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../setup/*.cpp")
     add_executable(DevilsThirdSetup WIN32 ${DT_SETUP_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/../common/rpx_decompress.cpp")
+    if(WIN32)
+        target_sources(DevilsThirdSetup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.rc")
+    endif()
     target_include_directories(DevilsThirdSetup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../common"
         "${CMAKE_CURRENT_BINARY_DIR}/generated_include")
     target_link_libraries(DevilsThirdSetup PRIVATE dt_zarchive dt_setup_imgui SDL3::SDL3 ${DT_ZLIB})
