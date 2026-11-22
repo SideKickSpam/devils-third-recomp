@@ -50,7 +50,7 @@ jobs:
           call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           set "CC=%CD%\llvm\bin\clang-cl.exe"
           set "LD=%CD%\llvm\bin\lld-link.exe"
-          cmake -S src\recomp -B build\recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="%CC%" -DCMAKE_LINKER="%LD%" || exit /b 1
+          cmake -S src\recomp -B build\recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="%CC%" -DCMAKE_CXX_COMPILER="%CC%" -DCMAKE_LINKER="%LD%" || exit /b 1
           cmake --build build\recomp || exit /b 1
           mkdir build\nogen
           cmake -S src\runtime -B build\release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="%CC%" -DCMAKE_CXX_COMPILER="%CC%" -DCMAKE_LINKER="%LD%" -DDT_GAME_MODULE=ON -DDT_GENERATED_DIR=%CD%\build\nogen || exit /b 1
@@ -94,5 +94,5 @@ jobs:
       - name: Build the recompiler
         run: |
           sudo apt-get install -y ninja-build clang
-          cmake -S src/recomp -B build/recomp -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          cmake -S src/recomp -B build/recomp -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build build/recomp

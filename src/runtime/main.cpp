@@ -47,7 +47,7 @@ void Usage()
 {
     fprintf(stderr,
         "usage: dt_port [options]\n"
-        "  --game-dir DIR       extracted game (default: DT_GAME_DIR, build/game-dir.txt, or game); expects DIR/dt.elf and the title folders\n"
+        "  --game-dir DIR       extracted game (default: DT_GAME_DIR, build/game-dir.txt, or game); expects the title folders (dt.elf optional)\n"
         "  --save-dir DIR       keep saves (/vol/save) in DIR instead of <game-dir>/save\n"
         "  --log FILE           write the import call log to FILE instead of stderr\n"
         "  --no-import-log      do not log import calls\n"
@@ -301,6 +301,11 @@ int main(int argc, char** argv)
                 Usage();
                 return 1;
             }
+        }
+        else if (a == "--help" || a == "-h")
+        {
+            Usage();
+            return 0;
         }
         else
         {

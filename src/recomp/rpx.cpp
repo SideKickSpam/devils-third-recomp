@@ -1,4 +1,5 @@
 #include "rpx.h"
+#include "rpx_decompress.h"
 
 #include "decoder.h"
 
@@ -41,6 +42,14 @@ bool RpxImage::Load(const std::string& path, std::string& error)
         return false;
     }
     file.assign(std::istreambuf_iterator<char>(in), {});
+    // The game's RPX as it ships (sections zlib-compressed): decompress it first.
+    if (file.size() >= 0x12 && file[0x10] == 0xFE && file[0x11] == 0x01)
+    {
+        std::vector<uint8_t> plain;
+        if (!rpx::Decompress(file, plain, error))
+            return false;
+        file.swap(plain);
+    }
     if (!ParseElf(error))
         return false;
     CollectImports();
@@ -78,7 +87,7 @@ bool RpxImage::ParseElf(std::string& error)
         sections[i].name = reinterpret_cast<const char*>(d + shstr.offset + nameOff);
         if (sections[i].flags & SHF_RPL_ZLIB)
         {
-            error = "section " + sections[i].name + " is still zlib-compressed (run wiiurpxtool -d first)";
+            error = "section " + sections[i].name + " is still zlib-compressed (not a Wii U RPX?)";
             return false;
         }
     }
