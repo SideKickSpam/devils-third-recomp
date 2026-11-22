@@ -1,0 +1,98 @@
+# Builds the Windows release (dt_port.exe, the setup tool, dt_recomp and the bundled compiler) and, for a version tag,
+# attaches it to a draft GitHub release. The build contains no game code: the setup tool builds the game module on the
+# player's PC from their own copy of the game.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: 19.1.7
+  LLVM_SHA256: f19ae5bc4823ac69ec01dc2ded503ec80a04ad2208dda1595d1f0413c148ef90
+
+jobs:
+  windows:
+    # Only in the public project (the development archive has the same files).
+    if: github.repository == 'SideKickSpam/devils-third-recomp'
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LLVM (the compiler the release bundles)
+        id: llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm
+          key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
+
+      - name: Download LLVM
+        if: steps.llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          Invoke-WebRequest $url -OutFile llvm.exe
+          $hash = (Get-FileHash llvm.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:LLVM_SHA256) { throw "LLVM installer checksum mismatch: $hash" }
+          7z x llvm.exe -ollvm -y | Out-Null
+          foreach ($f in "bin/clang-cl.exe", "bin/lld-link.exe") { if (!(Test-Path "llvm/$f")) { throw "missing llvm/$f" } }
+
+      - name: Build
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VS_PATH=%%i"
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          set "CC=%CD%\llvm\bin\clang-cl.exe"
+          set "LD=%CD%\llvm\bin\lld-link.exe"
+          cmake -S src\recomp -B build\recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="%CC%" -DCMAKE_LINKER="%LD%" || exit /b 1
+          cmake --build build\recomp || exit /b 1
+          mkdir build\nogen
+          cmake -S src\runtime -B build\release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="%CC%" -DCMAKE_CXX_COMPILER="%CC%" -DCMAKE_LINKER="%LD%" -DDT_GAME_MODULE=ON -DDT_GENERATED_DIR=%CD%\build\nogen || exit /b 1
+          cmake --build build\release || exit /b 1
+          cmake -DBUILD=%CD%\build\release -DRECOMP=%CD%\build\recomp -DLLVM=%CD%\llvm -DOUT=%CD%\dist\dt-port -DSOURCE=%CD% -P src\tools\package_release.cmake || exit /b 1
+
+      - name: Check that the release holds no game code
+        shell: pwsh
+        run: |
+          # The runtime must not contain translated game functions, and nothing generated may be shipped.
+          $bad = Get-ChildItem -Recurse dist | Where-Object { $_.Name -match '^(ppc_recomp\..*|ppc_func_mapping.*|ppc_config\.h|dt_game\.dll|.*\.(rpx|elf|wua))$' }
+          if ($bad) { $bad | ForEach-Object { Write-Error $_.FullName }; throw "generated or game files in the release" }
+          if (Select-String -Path dist/dt-port/dt_port.exe -Pattern 'sub_0[2-4][0-9A-F]{6}' -SimpleMatch:$false -Quiet) { throw "dt_port.exe contains recompiled function names" }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = if ($env:GITHUB_REF_TYPE -eq 'tag') { "dt-port-$env:GITHUB_REF_NAME-windows-x64" } else { "dt-port-$($env:GITHUB_SHA.Substring(0,8))-windows-x64" }
+          Compress-Archive -Path dist/dt-port -DestinationPath "$name.zip"
+          "ZIP=$name.zip" | Out-File -Append $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ env.ZIP }}
+
+      - name: Draft release (version tags)
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "$env:ZIP" --draft --title "dt-port $env:GITHUB_REF_NAME" --notes "Windows x64. Unzip anywhere and run DevilsThirdSetup.exe. You need your own copy of Devil's Third (North America, version 16)."
+
+  # Linux: the recompiler and the setup tool's checks build there; the runtime needs the generated code (there is no
+  # Linux game module yet), so Linux players build from source (BUILDING.md).
+  linux:
+    if: github.repository == 'SideKickSpam/devils-third-recomp'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the recompiler
+        run: |
+          sudo apt-get install -y ninja-build clang
+          cmake -S src/recomp -B build/recomp -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build/recomp

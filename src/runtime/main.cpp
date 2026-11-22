@@ -12,13 +12,13 @@
 #include "host/input.h"
 #include "host/window.h"
 #include "assets/game_fonts.h"
+#include "game_module.h"
 #include "game_patches.h"
 #include "hooks.h"
 #include "imports.h"
 #include "loader.h"
 #include "log.h"
 #include "platform.h"
-#include "ppc_config.h"
 #include "settings.h"
 #include "trace.h"
 #include "vfs.h"
@@ -152,17 +152,27 @@ std::string DefaultGameDir()
     return "game";
 }
 
+// The repository whose build/game/ holds the executable (empty if it is not in one).
+std::filesystem::path RepositoryRoot()
+{
+    const char* base = SDL_GetBasePath();  // the executable's directory, with a trailing separator
+    if (!base)
+        return {};
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::path(base).parent_path().parent_path().parent_path();
+    if (!std::filesystem::exists(root / "src" / "runtime", ec) && !std::filesystem::exists(root / "build" / "game-dir.txt", ec))
+        return {};
+    return root;
+}
+
 // Without --game-dir: run from the repository root, as the launcher does, when the executable sits in its build/game/,
 // so build/game-dir.txt, the shader cache and the logs are the launcher's wherever it was started from.
 bool UseRepositoryRoot()
 {
-    const char* base = SDL_GetBasePath();  // the executable's directory, with a trailing separator
-    if (!base)
+    const std::filesystem::path root = RepositoryRoot();
+    if (root.empty())
         return false;
     std::error_code ec;
-    const std::filesystem::path root = std::filesystem::path(base).parent_path().parent_path().parent_path();
-    if (!std::filesystem::exists(root / "src" / "runtime", ec) && !std::filesystem::exists(root / "build" / "game-dir.txt", ec))
-        return false;
     std::filesystem::current_path(root, ec);
     return !ec;
 }
@@ -170,17 +180,30 @@ bool UseRepositoryRoot()
 int main(int argc, char** argv)
 {
     std::string gameDir, tracePath;
+    std::string gameModule;  // --game-module: the generated code's DLL (builds with DT_GAME_MODULE)
     std::string rewriteTest;  // --rewrite-test: a localisation dump to run host::button_text over
     // Double-clicked (no arguments): behave like the launcher (no call log, the log in build/), and show start-up errors
     // in a box, since the console closes with the process.
-    const bool doubleClicked = argc == 1 && UseRepositoryRoot();
+    // An installed release (the setup tool's install.ini, outside a repository): the game, the shader cache and the
+    // log in %LOCALAPPDATA%\dt-port, saves in the settings directory; started without arguments, as the launcher.
+    const bool repository = !RepositoryRoot().empty();
+    const std::string installedGame = repository ? std::string() : game_module::InstalledGameDir();
+    const std::string dataDir = game_module::DataDir();
+    const bool installed = game_module::Used() && !repository && !dataDir.empty();
+    const bool doubleClicked = argc == 1 && (repository || installed);
     if (doubleClicked)
     {
+        if (repository)
+            UseRepositoryRoot();
         std::error_code ec;
-        std::filesystem::create_directories("build", ec);
-        dtlog::Open("build/dt_port.log");
+        const std::string logDir = installed ? dataDir : std::string("build");
+        std::filesystem::create_directories(std::filesystem::u8path(logDir), ec);
+        dtlog::Open((logDir + "/dt_port.log").c_str());
         cafe::SetImportLogging(false);
     }
+    if (installed)
+        cafe::gx2::SetShaderCacheDir(dataDir + "/shadercache");
+    bool saveDirGiven = false;
     int hangTimeout = 15;
     int frameTimeout = 0;
     std::string shotDir = "screenshots";
@@ -206,6 +229,7 @@ int main(int argc, char** argv)
             return argv[++i];
         };
         if (a == "--game-dir") gameDir = value();
+        else if (a == "--game-module") gameModule = value();
         else if (a == "--config") settings::Load(value());
         else if (a == "--vsync") settings::Override("display.vsync", value());
         else if (a == "--display") settings::Override("display.mode", value());
@@ -221,7 +245,7 @@ int main(int argc, char** argv)
             settings::Override(kv.substr(0, eq), kv.substr(eq + 1));
         }
         else if (a == "--log") dtlog::Open(value().c_str());
-        else if (a == "--save-dir") vfs::SetSaveDir(value());
+        else if (a == "--save-dir") vfs::SetSaveDir(value()), saveDirGiven = true;
         else if (a == "--no-import-log") cafe::SetImportLogging(false);
         else if (a == "--quiet") cafe::QuietImport(value());
         else if (a == "--log-only") cafe::LogOnlyImport(value());
@@ -349,6 +373,19 @@ int main(int argc, char** argv)
 
     RpxInfo info;
     std::string error;
+    if (installed && !saveDirGiven)
+        vfs::SetSaveDir(settings::Directory() + "save");
+    if (gameDir.empty() && installed && installedGame.empty() && !getenv("DT_GAME_DIR"))
+    {
+        // Not set up yet: the setup tool asks for the game and builds the module.
+        if (game_module::LaunchSetup(""))
+            return 0;
+    }
+    if (gameDir.empty() && !installedGame.empty() && !getenv("DT_GAME_DIR"))
+    {
+        gameDir = installedGame;
+        dtlog::Important("[dt-port] game directory %s (from install.ini)\n", gameDir.c_str());
+    }
     if (gameDir.empty())
     {
         UseRepositoryRoot();
@@ -356,13 +393,27 @@ int main(int argc, char** argv)
         dtlog::Important("[dt-port] game directory %s (from %s)\n", gameDir.c_str(),
                getenv("DT_GAME_DIR") && *getenv("DT_GAME_DIR") ? "DT_GAME_DIR" : gameDir == "game" ? "the default" : "build/game-dir.txt");
     }
-    if (!LoadRpx(gameDir + "/dt.elf", info, error) || !vfs::Init(gameDir, error))
+    // dt.elf (the decompressed RPX) if there is one, else the RPX in the update or base title's code folder.
+    std::string rpxPath = gameDir + "/dt.elf";
+    if (std::error_code ec; !std::filesystem::exists(std::filesystem::u8path(rpxPath), ec))
+        for (const char* prefix : { "0005000e", "00050000" })
+            for (const auto& e : std::filesystem::directory_iterator(std::filesystem::u8path(gameDir), ec))
+                if (e.path().filename().string().rfind(prefix, 0) == 0 &&
+                    std::filesystem::exists(e.path() / "code" / "DevilsThirdGame-WiiU-Shipping.rpx", ec) &&
+                    !std::filesystem::exists(std::filesystem::u8path(rpxPath), ec))
+                {
+                    const auto p = (e.path() / "code" / "DevilsThirdGame-WiiU-Shipping.rpx").u8string();
+                    rpxPath.assign(p.begin(), p.end());
+                }
+    if (!LoadRpx(rpxPath, info, error) || !vfs::Init(gameDir, error))
     {
         fprintf(stderr, "error: %s\n", error.c_str());
         if (doubleClicked)
         {
-            const std::string text = error + "\n\nPut the game directory (holding dt.elf and the extracted title folders) "
-                                             "in build\\game-dir.txt, or set DT_GAME_DIR.";
+            const std::string text = installed
+                ? error + "\n\nRun DevilsThirdSetup.exe again and point it at your copy of the game."
+                : error + "\n\nPut the game directory (holding dt.elf and the extracted title folders) "
+                          "in build\\game-dir.txt, or set DT_GAME_DIR.";
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "dt-port", text.c_str(), nullptr);
         }
         return 1;
@@ -371,6 +422,16 @@ int main(int argc, char** argv)
     {
         assets::WriteFontSamples(fontSampleDir);  // debugging: which of the game's fonts is which
         return 0;
+    }
+    // The generated code: linked in, or (Windows releases) the game module the setup tool built from the player's copy.
+    if (std::string moduleError; !game_module::Load(gameModule, moduleError))
+    {
+        fprintf(stderr, "error: %s\n", moduleError.c_str());
+        // A release whose module is missing or from another version: the setup tool rebuilds it, then starts the game.
+        if (installed && gameModule.empty() && game_module::LaunchSetup("--rebuild"))
+            return 0;
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Devil's Third", moduleError.c_str(), nullptr);
+        return 1;
     }
     trace::FinishSymbols();
     cafe::InitImports();

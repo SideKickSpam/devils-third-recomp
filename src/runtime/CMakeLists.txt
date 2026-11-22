@@ -11,6 +11,8 @@ project(dt_port C CXX)
 #   cmake -S src\runtime -B build\game -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
 #   cmake --build build\game -j 12
 
+# Windows: the C and C++ runtime linked in, so the release runs on PCs without the Visual C++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -37,7 +39,14 @@ if(NOT DT_TRACE_RING)
     add_compile_definitions(PPC_NO_TRACE_RING)
 endif()
 get_filename_component(DT_GENERATED_DIR "${DT_GENERATED_DIR}" ABSOLUTE)
-if(NOT EXISTS "${DT_GENERATED_DIR}/ppc_config.h")
+# The game module (Windows releases): the generated code as dt_game.dll, built on the player's machine by the setup
+# tool; dt_port.exe then contains no game code. Without recompiler output (CI, releases) only the runtime and the setup
+# tool are built; with it (development) dt_game.dll is built too, as the setup tool builds it.
+option(DT_GAME_MODULE "Load the generated code from the game module dt_game.dll, as releases do (Windows)" OFF)
+set(DT_HAVE_GENERATED OFF)
+if(EXISTS "${DT_GENERATED_DIR}/ppc_config.h")
+    set(DT_HAVE_GENERATED ON)
+elseif(NOT DT_GAME_MODULE)
     message(FATAL_ERROR "No recompiler output in ${DT_GENERATED_DIR}. Run dt_recomp first.")
 endif()
 
@@ -165,15 +174,53 @@ else()
 endif()
 
 # ---- recompiled game code ----
-file(GLOB DT_RECOMP_SOURCES CONFIGURE_DEPENDS "${DT_GENERATED_DIR}/ppc_recomp.*.cpp")
-set(DT_GENERATED_SOURCES ${DT_RECOMP_SOURCES} "${DT_GENERATED_DIR}/ppc_func_mapping.cpp" "${DT_GENERATED_DIR}/ppc_imports.cpp")
+if(DT_GAME_MODULE AND NOT DT_MSVC_DRIVER)
+    message(FATAL_ERROR "DT_GAME_MODULE needs clang-cl (Windows)")
+endif()
+# The module's ABI: a hash of everything the module's code depends on (the recompiler, the hook list, ppc_context.h,
+# the module's own source and its build flags), compiled into both dt_port.exe and dt_game.dll. The runtime loads only
+# a module with its own ABI; otherwise the setup tool rebuilds it (a dt-port update).
+set(DT_MODULE_FLAGS /O2 /w /X /Zl /GS- /GR- /EHs-c- /clang:-fno-math-errno /clang:-msse4.1 /clang:-mno-stack-arg-probe
+    /clang:-mmovbe /clang:-mlzcnt /clang:-mpopcnt /clang:-mbmi /clang:-mbmi2)
+file(GLOB DT_MODULE_ABI_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/hooks.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ppc_context.h" "${CMAKE_CURRENT_SOURCE_DIR}/module/dt_module.cpp")
+set(DT_MODULE_ABI_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated_include/module_abi.h")
+string(REPLACE ";" " " DT_MODULE_FLAGS_TEXT "${DT_MODULE_FLAGS}")
+add_custom_command(OUTPUT "${DT_MODULE_ABI_HEADER}.stamp" BYPRODUCTS "${DT_MODULE_ABI_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" "-DFILES=${DT_MODULE_ABI_SOURCES}" "-DOUT=${DT_MODULE_ABI_HEADER}" -DNAME=DT_MODULE_ABI
+        "-DEXTRA=${DT_MODULE_FLAGS_TEXT}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cache_version.cmake"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${DT_MODULE_ABI_HEADER}.stamp"
+    DEPENDS ${DT_MODULE_ABI_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cache_version.cmake"
+    COMMENT "Hashing the game module's sources" VERBATIM)
+add_custom_target(dt_module_abi DEPENDS "${DT_MODULE_ABI_HEADER}.stamp")
 
-add_library(dt_guest OBJECT ${DT_GENERATED_SOURCES})
-target_include_directories(dt_guest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${DT_GENERATED_DIR}")
-if(DT_MSVC_DRIVER)
-    target_compile_options(dt_guest PRIVATE /w)
-else()
-    target_compile_options(dt_guest PRIVATE -w)
+if(DT_HAVE_GENERATED)
+    file(GLOB DT_RECOMP_SOURCES CONFIGURE_DEPENDS "${DT_GENERATED_DIR}/ppc_recomp.*.cpp")
+    set(DT_GENERATED_SOURCES ${DT_RECOMP_SOURCES} "${DT_GENERATED_DIR}/ppc_func_mapping.cpp"
+        "${DT_GENERATED_DIR}/ppc_imports.cpp")
+endif()
+
+if(DT_GAME_MODULE AND DT_HAVE_GENERATED)
+    # As the setup tool builds it (setup/module_build.cpp): the same flags, freestanding (no C or C++ library, no
+    # system headers: /X), talking to the runtime through DtModuleHost (ppc_context.h, module/dt_module.cpp).
+    add_library(dt_game SHARED ${DT_GENERATED_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/module/dt_module.cpp")
+    target_include_directories(dt_game PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${DT_GENERATED_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated_include")
+    target_compile_definitions(dt_game PRIVATE DT_MODULE)
+    target_compile_options(dt_game PRIVATE ${DT_MODULE_FLAGS})
+    target_link_options(dt_game PRIVATE /NODEFAULTLIB /NOENTRY)
+    add_dependencies(dt_game dt_module_abi)
+endif()
+
+if(NOT DT_GAME_MODULE)
+    add_library(dt_guest OBJECT ${DT_GENERATED_SOURCES})
+    target_include_directories(dt_guest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${DT_GENERATED_DIR}")
+    if(DT_MSVC_DRIVER)
+        target_compile_options(dt_guest PRIVATE /w)
+    else()
+        target_compile_options(dt_guest PRIVATE -w)
+    endif()
 endif()
 
 # ---- host runtime ----
@@ -202,8 +249,19 @@ add_custom_command(OUTPUT "${DT_CACHE_VERSION_HEADER}.stamp" BYPRODUCTS "${DT_CA
     DEPENDS ${DT_CACHE_VERSION_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cache_version.cmake"
     COMMENT "Hashing the shader translator and renderer sources" VERBATIM)
 list(APPEND DT_RUNTIME_SOURCES "${DT_CACHE_VERSION_HEADER}.stamp")
+list(APPEND DT_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../common/rpx_decompress.cpp")
 add_executable(dt_port ${DT_RUNTIME_SOURCES})
-target_link_libraries(dt_port PRIVATE dt_guest dt_shaderlib dt_volk dt_addrlib dt_imgui SDL3::SDL3 ${DT_ZLIB})
+target_include_directories(dt_port PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../common")
+if(DT_GAME_MODULE)
+    target_link_libraries(dt_port PRIVATE dt_shaderlib dt_volk dt_addrlib dt_imgui SDL3::SDL3 ${DT_ZLIB})
+    target_compile_definitions(dt_port PRIVATE DT_HOST_MODULE)
+    add_dependencies(dt_port dt_module_abi)
+    if(TARGET dt_game)
+        add_dependencies(dt_port dt_game)
+    endif()
+else()
+    target_link_libraries(dt_port PRIVATE dt_guest dt_shaderlib dt_volk dt_addrlib dt_imgui SDL3::SDL3 ${DT_ZLIB})
+endif()
 target_include_directories(dt_port PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated_include")
 if(DT_MSVC_DRIVER)
     target_compile_options(dt_port PRIVATE /W3)
@@ -215,4 +273,69 @@ if(DT_MSVC_DRIVER)
 else()
     # Vulkan create-info structs are initialised as `Info i{ VK_STRUCTURE_TYPE_... }`.
     target_compile_options(dt_port PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+endif()
+
+# ---- the setup tool (DevilsThirdSetup): checks the player's copy of the game and builds dt_game.dll from it ----
+option(DT_SETUP "Build the setup tool" ON)
+if(DT_SETUP)
+    # zstd (BSD), decompression only, for ZArchive.
+    FetchContent_Declare(zstd
+        URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+        URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3)
+    FetchContent_GetProperties(zstd)
+    if(NOT zstd_POPULATED)
+        FetchContent_Populate(zstd)
+    endif()
+    file(GLOB DT_ZSTD_SOURCES "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/decompress/*.c")
+    add_library(dt_zstd STATIC ${DT_ZSTD_SOURCES})
+    target_include_directories(dt_zstd PUBLIC "${zstd_SOURCE_DIR}/lib")
+    target_compile_definitions(dt_zstd PRIVATE ZSTD_DISABLE_ASM)
+    # ZArchive (MIT No Attribution; Exzap), the .wua format's reader.
+    FetchContent_Declare(zarchive
+        URL https://github.com/Exzap/ZArchive/archive/965b66c8d67b6b7e30fd63b3b75aa91a99ff303b.tar.gz
+        URL_HASH SHA256=8811f42220127424c4520b4cff71dc41b05449e6609a0b84327fdf2842abd15f)
+    FetchContent_GetProperties(zarchive)
+    if(NOT zarchive_POPULATED)
+        FetchContent_Populate(zarchive)
+    endif()
+    add_library(dt_zarchive STATIC "${zarchive_SOURCE_DIR}/src/zarchivereader.cpp")
+    target_include_directories(dt_zarchive PUBLIC "${zarchive_SOURCE_DIR}/include")
+    target_link_libraries(dt_zarchive PUBLIC dt_zstd)
+    if(DT_MSVC_DRIVER)
+        target_compile_options(dt_zstd PRIVATE /w)
+        target_compile_options(dt_zarchive PRIVATE /w)
+    else()
+        target_compile_options(dt_zstd PRIVATE -w)
+        target_compile_options(dt_zarchive PRIVATE -w)
+    endif()
+    # Dear ImGui with SDL3's 2D renderer (no Vulkan needed to set up).
+    add_library(dt_setup_imgui STATIC "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+        "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+        "${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp" "${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp")
+    target_include_directories(dt_setup_imgui PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
+    target_compile_definitions(dt_setup_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+    target_link_libraries(dt_setup_imgui PUBLIC SDL3::SDL3)
+
+    file(GLOB DT_SETUP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../setup/*.cpp")
+    add_executable(DevilsThirdSetup WIN32 ${DT_SETUP_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/../common/rpx_decompress.cpp")
+    target_include_directories(DevilsThirdSetup PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../common"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated_include")
+    target_link_libraries(DevilsThirdSetup PRIVATE dt_zarchive dt_setup_imgui SDL3::SDL3 ${DT_ZLIB})
+    add_dependencies(DevilsThirdSetup dt_module_abi)
+    if(NOT DT_MSVC_DRIVER)
+        target_compile_options(DevilsThirdSetup PRIVATE -Wall -Wno-deprecated-declarations)
+    endif()
+    if(WIN32)
+        target_link_libraries(DevilsThirdSetup PRIVATE ole32 shell32 uuid)
+        target_compile_definitions(DevilsThirdSetup PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+    endif()
+
+    # The release's tools/sdk folder: what the setup tool needs to build dt_game.dll on the player's machine.
+    add_custom_target(dt_sdk ALL
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sdk"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ppc_context.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/module/dt_module.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/hooks.txt"
+            "${DT_MODULE_ABI_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/sdk"
+        VERBATIM)
+    add_dependencies(dt_sdk dt_module_abi)
 endif()

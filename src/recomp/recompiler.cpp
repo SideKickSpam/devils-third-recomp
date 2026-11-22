@@ -339,7 +339,7 @@ void Recompiler::RecompileFunction(const Function& fn, std::string& out)
                 EaX(ra, rb), Gpr(d));
             break;
         case Op::STWCX_RC: print("\tppc_stwcx(ctx, base, {}, {});\n", EaX(ra, rb), Gpr(d)); break;
-        case Op::DCBZ: case Op::DCBZ_L: print("\tmemset(base + (({}) & ~31u), 0, 32);\n", EaX(ra, rb)); break;
+        case Op::DCBZ: case Op::DCBZ_L: print("\t__builtin_memset(base + (({}) & ~31u), 0, 32);\n", EaX(ra, rb)); break;
         case Op::DCBST: case Op::DCBF: case Op::DCBI: case Op::DCBT: case Op::DCBTST: case Op::ICBI:
         case Op::SYNC: case Op::ISYNC: case Op::EIEIO: case Op::TLBSYNC:
             break;  // cache and ordering hints: no-ops on the host
@@ -412,9 +412,9 @@ void Recompiler::RecompileFunction(const Function& fn, std::string& out)
         case Op::FMSUB: fpDouble(std::format("{} * {} - {}", fa, fc, fb)); break;
         case Op::FNMADD: fpDouble(std::format("-({} * {} + {})", fa, fc, fb)); break;
         case Op::FNMSUB: fpDouble(std::format("-({} * {} - {})", fa, fc, fb)); break;
-        case Op::FSQRT: fpDouble(std::format("std::sqrt({})", fb)); break;
+        case Op::FSQRT: fpDouble(std::format("ppc_sqrt({})", fb)); break;
         case Op::FSEL: fpDouble(std::format("{} >= 0.0 ? {} : {}", fa, fc, fb)); break;
-        case Op::FRSQRTE: fpDouble(std::format("1.0 / std::sqrt({})", fb)); break;
+        case Op::FRSQRTE: fpDouble(std::format("1.0 / ppc_sqrt({})", fb)); break;
         case Op::FADDS: fpSingle(std::format("{} + {}", fa, fb)); break;
         case Op::FSUBS: fpSingle(std::format("{} - {}", fa, fb)); break;
         case Op::FMULS: fpSingle(std::format("{} * {}", fa, fc)); break;
@@ -423,7 +423,7 @@ void Recompiler::RecompileFunction(const Function& fn, std::string& out)
         case Op::FMSUBS: fpSingle(std::format("{} * {} - {}", fa, fc, fb)); break;
         case Op::FNMADDS: fpSingle(std::format("-({} * {} + {})", fa, fc, fb)); break;
         case Op::FNMSUBS: fpSingle(std::format("-({} * {} - {})", fa, fc, fb)); break;
-        case Op::FSQRTS: fpSingle(std::format("std::sqrt({})", fb)); break;
+        case Op::FSQRTS: fpSingle(std::format("ppc_sqrt({})", fb)); break;
         case Op::FRES: fpSingle(std::format("1.0 / {}", fb)); break;
         case Op::FRSP: fpSingle(fb); break;
         case Op::FMR: fpDouble(fb); break;
@@ -456,7 +456,7 @@ void Recompiler::RecompileFunction(const Function& fn, std::string& out)
         case Op::PS_SUM1: ps("c0", "a0 + b1"); break;
         case Op::PS_SEL: ps("a0 >= 0.0 ? c0 : b0", "a1 >= 0.0 ? c1 : b1", false); break;
         case Op::PS_RES: ps("1.0 / b0", "1.0 / b1"); break;
-        case Op::PS_RSQRTE: ps("1.0 / std::sqrt(b0)", "1.0 / std::sqrt(b1)"); break;
+        case Op::PS_RSQRTE: ps("1.0 / ppc_sqrt(b0)", "1.0 / ppc_sqrt(b1)"); break;
         case Op::PS_MR: ps("b0", "b1", false); break;
         case Op::PS_NEG: ps("ppc_fneg(b0)", "ppc_fneg(b1)", false); break;
         case Op::PS_ABS: ps("ppc_fabs(b0)", "ppc_fabs(b1)", false); break;
@@ -477,7 +477,7 @@ void Recompiler::RecompileFunction(const Function& fn, std::string& out)
         case Op::CROR: print("\tctx.cr[{}] = ctx.cr[{}] | ctx.cr[{}];\n", d, ra, rb); break;
         case Op::CRORC: print("\tctx.cr[{}] = ctx.cr[{}] | !ctx.cr[{}];\n", d, ra, rb); break;
         case Op::CRXOR: print("\tctx.cr[{}] = ctx.cr[{}] ^ ctx.cr[{}];\n", d, ra, rb); break;
-        case Op::MCRF: print("\tmemcpy(ctx.cr + {}, ctx.cr + {}, 4);\n", CRFD(w) * 4, CRFS(w) * 4); break;
+        case Op::MCRF: print("\t__builtin_memcpy(ctx.cr + {}, ctx.cr + {}, 4);\n", CRFD(w) * 4, CRFS(w) * 4); break;
         case Op::MCRXR:
             print("\t{{ uint8_t* c = ctx.cr + {}; c[0] = ctx.xer.so; c[1] = ctx.xer.ov; c[2] = ctx.xer.ca; c[3] = 0; "
                   "ctx.xer.so = ctx.xer.ov = ctx.xer.ca = 0; }}\n", CRFD(w) * 4);

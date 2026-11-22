@@ -2,7 +2,6 @@
 #include "gpu/queue.h"
 
 #include "log.h"
-#include "ppc_config.h"
 #include "trace.h"
 
 #include <algorithm>
@@ -98,7 +97,9 @@ constexpr size_t MaxHostFunctions = 512;
 std::array<ImportImpl, MaxHostFunctions> gHostFunctions;
 size_t gHostFunctionCount = 0;
 
-std::vector<PPCFunc*> gCodeTable;                 // (addr - PPC_CODE_BASE) / 4 -> function
+std::vector<PPCFunc*> gCodeTable;                 // (addr - gCodeBase) / 4 -> function
+// The code's range: from the function table (no generated header: release runtimes are built without the game).
+uint32_t gCodeBase = 0, gCodeEnd = 0;
 std::unordered_map<uint32_t, PPCFunc*> gFarTable;  // import stubs and host functions
 
 std::string RawArgs(PPCContext& ctx)
@@ -248,9 +249,14 @@ void InitImports()
         if (staticLibs.count(impl->lib))  // other libraries are reached through OSDynLoad
             dtlog::Important("warning: %s is implemented but the game does not import it\n", name.c_str());
 
-    gCodeTable.assign((PPC_CODE_END - PPC_CODE_BASE) / 4, nullptr);
+    gCodeBase = ~0u, gCodeEnd = 0;
     for (const PPCFuncMapping* m = PPCFuncMappings; m->func; m++)
-        gCodeTable[(m->addr - PPC_CODE_BASE) / 4] = m->func;
+        gCodeBase = std::min(gCodeBase, m->addr), gCodeEnd = std::max(gCodeEnd, m->addr + 4);
+    if (gCodeEnd <= gCodeBase)
+        gCodeBase = gCodeEnd = 0;
+    gCodeTable.assign((gCodeEnd - gCodeBase) / 4, nullptr);
+    for (const PPCFuncMapping* m = PPCFuncMappings; m->func; m++)
+        gCodeTable[(m->addr - gCodeBase) / 4] = m->func;
     dtlog::Important("[dt-port] %zu of %zu imports implemented\n", implemented, total);
 }
 
@@ -320,8 +326,8 @@ uint32_t gNextNumber = 0;
 
 PPCFunc* LookupSlow(uint32_t addr)
 {
-    if (addr - PPC_CODE_BASE < PPC_CODE_END - PPC_CODE_BASE && !(addr & 3))
-        return cafe::gCodeTable[(addr - PPC_CODE_BASE) >> 2];
+    if (addr - cafe::gCodeBase < cafe::gCodeEnd - cafe::gCodeBase && !(addr & 3))
+        return cafe::gCodeTable[(addr - cafe::gCodeBase) >> 2];
     if (auto it = cafe::gFarTable.find(addr); it != cafe::gFarTable.end())
         return it->second;
     return nullptr;

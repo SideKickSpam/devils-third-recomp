@@ -1,13 +1,24 @@
 // Guest CPU state and helpers used by the recompiled code.
 // Register model follows the Espresso (PowerPC 750 family): 32-bit GPRs, paired-single FPRs, GQRs.
 // Loosely based on XenonRecomp's ppc_context.h (MIT, hedge-dev and contributors).
+//
+// Three builds use it:
+// - the runtime with the generated code linked in (the default, and Linux);
+// - DT_MODULE: the game module, the generated code built on the player's machine as a DLL (Windows releases): no C or
+//   C++ library at all (only clang's own <stdint.h>/<stddef.h>), and the runtime's functions and data through
+//   DtModuleHost, which the runtime hands over when it loads the module (dt_module_init);
+// - DT_HOST_MODULE: the runtime that loads such a module (game_module.cpp): the generated tables are pointers it gets
+//   from the module.
 #pragma once
 
+#if defined(DT_MODULE)
+#include <stddef.h>
+#include <stdint.h>
+#else
 #include <atomic>
-#include <bit>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
+#endif
 
 union PPCReg
 {
@@ -80,12 +91,70 @@ struct PPCHookSlot
     PPCFunc* original;
 };
 
+#if defined(DT_HOST_MODULE)
+extern const PPCFuncMapping* PPCFuncMappings;  // (from the loaded module; indexed and walked as the arrays are)
+extern const PPCHookSlot* PPCHookSlots;
+extern const PPCImportMapping* PPCImportMappings;
+extern const PPCDataImport* PPCDataImports;
+#else
 extern const PPCFuncMapping PPCFuncMappings[];
 extern const PPCHookSlot PPCHookSlots[];
 extern const PPCImportMapping PPCImportMappings[];
 extern const PPCDataImport PPCDataImports[];
+#endif
+
+// ---- the game module's interface (Windows releases) ----
+// The runtime calls the module's exported dt_module_init with this table and gets the generated tables back. A
+// different DT_MODULE_VERSION on either side refuses the module: the launcher then rebuilds it.
+constexpr uint32_t DT_MODULE_VERSION = 2;
+struct PPCTraceRing;
+struct DtModuleHost
+{
+    uint32_t version;
+    PPCFunc* (*lookup)(uint32_t addr);
+    void (*import)(PPCContext& ctx, uint8_t* base, uint32_t index);
+    void (*trap)(PPCContext& ctx, uint32_t addr);
+    void (*unsupported)(PPCContext& ctx, uint32_t addr, const char* what);
+    void (*bad_branch)(PPCContext& ctx, uint32_t from, uint32_t to);
+    void (*syscall)(PPCContext& ctx, uint8_t* base, uint32_t addr);
+    uint64_t (*timebase)();
+    void (*fpscr_changed)(PPCContext& ctx);
+    void (*trace_log)(uint32_t addr);
+    uint64_t* lookup_cache;              // ppc_lookup_cache (std::atomic<uint64_t> has a plain uint64_t's layout)
+    PPCFunc* const* const* func_list;    // &ppc_func_list
+    const bool* trace_all;               // &ppc_trace_all
+    uint32_t tls_index, ring_offset;     // the runtime's thread-local ppc_trace_ring: TLS slot and offset in it
+};
+struct DtModuleExports
+{
+    uint32_t version;
+    const PPCFuncMapping* funcs;
+    const PPCHookSlot* hooks;
+    const PPCImportMapping* imports;
+    const PPCDataImport* data;
+    const char* abi;  // DT_MODULE_ABI (module_abi.h) of the build it was made for
+};
 
 // ---- runtime entry points ----
+#if defined(DT_MODULE)
+extern "C" DtModuleHost dt_host;  // (dt_module.cpp: a copy of the runtime's table)
+inline PPCFunc* ppc_lookup(uint32_t addr) { return dt_host.lookup(addr); }
+inline void ppc_import(PPCContext& ctx, uint8_t* base, uint32_t index) { dt_host.import(ctx, base, index); }
+[[noreturn]] inline void ppc_trap(PPCContext& ctx, uint32_t addr) { dt_host.trap(ctx, addr); __builtin_unreachable(); }
+[[noreturn]] inline void ppc_unsupported(PPCContext& ctx, uint32_t addr, const char* what)
+{
+    dt_host.unsupported(ctx, addr, what);
+    __builtin_unreachable();
+}
+[[noreturn]] inline void ppc_bad_branch(PPCContext& ctx, uint32_t from, uint32_t to)
+{
+    dt_host.bad_branch(ctx, from, to);
+    __builtin_unreachable();
+}
+inline void ppc_syscall(PPCContext& ctx, uint8_t* base, uint32_t addr) { dt_host.syscall(ctx, base, addr); }
+inline uint64_t ppc_timebase() { return dt_host.timebase(); }
+inline void ppc_fpscr_changed(PPCContext& ctx) { dt_host.fpscr_changed(ctx); }
+#else
 PPCFunc* ppc_lookup(uint32_t addr);
 void ppc_import(PPCContext& ctx, uint8_t* base, uint32_t index);  // index into PPCImportMappings
 [[noreturn]] void ppc_trap(PPCContext& ctx, uint32_t addr);
@@ -94,6 +163,7 @@ void ppc_import(PPCContext& ctx, uint8_t* base, uint32_t index);  // index into 
 void ppc_syscall(PPCContext& ctx, uint8_t* base, uint32_t addr);
 uint64_t ppc_timebase();
 void ppc_fpscr_changed(PPCContext& ctx);
+#endif
 
 // Indirect calls (virtual calls, and every import call through lis/addi; mtctr; bctrl) look in a global cache inline
 // first: each entry packs the address (low 32 bits) and the function's number in ppc_func_list (high 32 bits) in one
@@ -107,11 +177,17 @@ void ppc_fpscr_changed(PPCContext& ctx);
 #define PPC_NOINLINE __attribute__((noinline))
 #endif
 constexpr uint32_t PPCLookupCacheSize = 16384;
+#if defined(DT_MODULE)
+#define PPC_LOOKUP_CACHE_ENTRY(i) __atomic_load_n(dt_host.lookup_cache + (i), __ATOMIC_ACQUIRE)
+#define ppc_func_list (*dt_host.func_list)
+#else
 extern std::atomic<uint64_t> ppc_lookup_cache[PPCLookupCacheSize];
 extern PPCFunc* const* ppc_func_list;
+#define PPC_LOOKUP_CACHE_ENTRY(i) ppc_lookup_cache[i].load(std::memory_order_acquire)
+#endif
 PPC_FORCEINLINE PPCFunc* ppc_lookup_fast(uint32_t addr)
 {
-    const uint64_t e = ppc_lookup_cache[(addr >> 2) & (PPCLookupCacheSize - 1)].load(std::memory_order_acquire);
+    const uint64_t e = PPC_LOOKUP_CACHE_ENTRY((addr >> 2) & (PPCLookupCacheSize - 1));
     if (uint32_t(e) == addr && addr)
         return ppc_func_list[e >> 32];
     return ppc_lookup(addr);
@@ -131,9 +207,23 @@ struct PPCTraceRing
 #else
 #define PPC_TLS __thread
 #endif
+#if defined(DT_MODULE)
+// The runtime's thread-local ring, reached as Windows' implicit TLS does: the thread's TLS array (TEB +0x58), the
+// runtime's slot in it, the variable's offset in the slot.
+PPC_FORCEINLINE PPCTraceRing& ppc_trace_ring_here()
+{
+    char** tls;
+    __asm__("movq %%gs:0x58, %0" : "=r"(tls));
+    return *reinterpret_cast<PPCTraceRing*>(tls[dt_host.tls_index] + dt_host.ring_offset);
+}
+#define ppc_trace_ring (ppc_trace_ring_here())
+#define ppc_trace_all (*dt_host.trace_all)
+inline void ppc_trace_log(uint32_t addr) { dt_host.trace_log(addr); }
+#else
 extern PPC_TLS PPCTraceRing ppc_trace_ring;
 extern bool ppc_trace_all;
 void ppc_trace_log(uint32_t addr);
+#endif
 
 #ifdef PPC_NO_TRACE_RING
 // Built without function-entry tracing (DT_TRACE_RING=OFF): no ring for crash/hang reports, no --trace.
@@ -225,7 +315,7 @@ inline uint32_t ppc_mfcr(const PPCContext& ctx)
     for (int g = 0; g < 4; g++)
     {
         uint64_t x;
-        memcpy(&x, ctx.cr + g * 8, 8);
+        __builtin_memcpy(&x, ctx.cr + g * 8, 8);
         x &= 0x0101010101010101ull;
         // byte i's low bit lands at bit 63 - i: cr[8g] becomes the group's most significant bit
         v |= uint32_t((x * 0x8040201008040201ull) >> 56) << (24 - 8 * g);
@@ -255,9 +345,9 @@ inline void ppc_mtcrf(PPCContext& ctx, uint32_t crm, uint32_t v)
         if (!mask)
             continue;
         uint64_t x;
-        memcpy(&x, ctx.cr + g * 8, 8);
+        __builtin_memcpy(&x, ctx.cr + g * 8, 8);
         x = (x & ~mask) | (ppc_cr_spread.bytes[(v >> (24 - 8 * g)) & 0xFF] & mask);
-        memcpy(ctx.cr + g * 8, &x, 8);
+        __builtin_memcpy(ctx.cr + g * 8, &x, 8);
     }
 }
 
@@ -329,22 +419,27 @@ inline void ppc_stswi(PPCContext& ctx, uint8_t* base, uint32_t ea, uint32_t rs, 
 }
 
 // ---- floating point helpers ----
-inline uint64_t ppc_bits(double d) { return std::bit_cast<uint64_t>(d); }
-inline double ppc_from_bits(uint64_t v) { return std::bit_cast<double>(v); }
+// (clang's builtins throughout, no <cmath>: the game module has no C library. With SSE4.1 and -fno-math-errno, sqrt,
+// trunc and nearbyint compile to single instructions.)
+inline uint64_t ppc_bits(double d) { return __builtin_bit_cast(uint64_t, d); }
+inline double ppc_from_bits(uint64_t v) { return __builtin_bit_cast(double, v); }
+inline double ppc_sqrt(double d) { return __builtin_sqrt(d); }
+// x * 2^n for the quantizer's scales (-32..31): exact, as ldexp is for these values.
+inline double ppc_ldexp(double x, int n) { return x * ppc_from_bits(uint64_t(1023 + n) << 52); }
 inline double ppc_round_single(double d) { return double(float(d)); }
 inline double ppc_fneg(double d) { return ppc_from_bits(ppc_bits(d) ^ 0x8000000000000000ull); }
 inline double ppc_fabs(double d) { return ppc_from_bits(ppc_bits(d) & ~0x8000000000000000ull); }
 inline double ppc_fnabs(double d) { return ppc_from_bits(ppc_bits(d) | 0x8000000000000000ull); }
 
-inline double ppc_load_f32(uint8_t* base, uint32_t ea) { return double(std::bit_cast<float>(PPC_LOAD_U32(ea))); }
+inline double ppc_load_f32(uint8_t* base, uint32_t ea) { return double(__builtin_bit_cast(float, uint32_t(PPC_LOAD_U32(ea)))); }
 inline double ppc_load_f64(uint8_t* base, uint32_t ea) { return ppc_from_bits(PPC_LOAD_U64(ea)); }
-inline void ppc_store_f32(uint8_t* base, uint32_t ea, double v) { PPC_STORE_U32(ea, std::bit_cast<uint32_t>(float(v))); }
+inline void ppc_store_f32(uint8_t* base, uint32_t ea, double v) { PPC_STORE_U32(ea, __builtin_bit_cast(uint32_t, float(v))); }
 inline void ppc_store_f64(uint8_t* base, uint32_t ea, double v) { PPC_STORE_U64(ea, ppc_bits(v)); }
 
 inline void ppc_fcmp(PPCContext& ctx, int field, double a, double b)
 {
     uint8_t* c = ctx.cr + field * 4;
-    const bool un = std::isnan(a) || std::isnan(b);
+    const bool un = __builtin_isnan(a) || __builtin_isnan(b);
     c[0] = !un && a < b;
     c[1] = !un && a > b;
     c[2] = !un && a == b;
@@ -355,11 +450,11 @@ inline void ppc_fcmp(PPCContext& ctx, int field, double a, double b)
 inline double ppc_fctiw(double v, bool truncate)
 {
     int32_t r;
-    if (std::isnan(v))
+    if (__builtin_isnan(v))
         r = INT32_MIN;
     else
     {
-        const double t = truncate ? std::trunc(v) : std::nearbyint(v);
+        const double t = truncate ? __builtin_trunc(v) : __builtin_nearbyint(v);
         r = t >= 2147483647.0 ? INT32_MAX : t <= -2147483648.0 ? INT32_MIN : int32_t(t);
     }
     return ppc_from_bits(0xFFF8000000000000ull | uint32_t(r));
@@ -406,10 +501,10 @@ inline double ppc_dequantize(uint8_t* base, uint32_t ea, uint32_t type, int scal
 {
     switch (type)
     {
-    case 4: return std::ldexp(double(PPC_LOAD_U8(ea)), -scale);
-    case 5: return std::ldexp(double(PPC_LOAD_U16(ea)), -scale);
-    case 6: return std::ldexp(double(int8_t(PPC_LOAD_U8(ea))), -scale);
-    case 7: return std::ldexp(double(int16_t(PPC_LOAD_U16(ea))), -scale);
+    case 4: return ppc_ldexp(double(PPC_LOAD_U8(ea)), -scale);
+    case 5: return ppc_ldexp(double(PPC_LOAD_U16(ea)), -scale);
+    case 6: return ppc_ldexp(double(int8_t(PPC_LOAD_U8(ea))), -scale);
+    case 7: return ppc_ldexp(double(int16_t(PPC_LOAD_U16(ea))), -scale);
     default: return ppc_load_f32(base, ea);
     }
 }
@@ -419,10 +514,10 @@ inline void ppc_quantize(uint8_t* base, uint32_t ea, double v, uint32_t type, in
     auto clamp = [](double x, double lo, double hi) { return x < lo ? lo : x > hi ? hi : x; };
     switch (type)
     {
-    case 4: PPC_STORE_U8(ea, uint8_t(clamp(std::ldexp(v, scale), 0, 255))); break;
-    case 5: PPC_STORE_U16(ea, uint16_t(clamp(std::ldexp(v, scale), 0, 65535))); break;
-    case 6: PPC_STORE_U8(ea, uint8_t(int8_t(clamp(std::ldexp(v, scale), -128, 127)))); break;
-    case 7: PPC_STORE_U16(ea, uint16_t(int16_t(clamp(std::ldexp(v, scale), -32768, 32767)))); break;
+    case 4: PPC_STORE_U8(ea, uint8_t(clamp(ppc_ldexp(v, scale), 0, 255))); break;
+    case 5: PPC_STORE_U16(ea, uint16_t(clamp(ppc_ldexp(v, scale), 0, 65535))); break;
+    case 6: PPC_STORE_U8(ea, uint8_t(int8_t(clamp(ppc_ldexp(v, scale), -128, 127)))); break;
+    case 7: PPC_STORE_U16(ea, uint16_t(int16_t(clamp(ppc_ldexp(v, scale), -32768, 32767)))); break;
     default: ppc_store_f32(base, ea, v); break;
     }
 }

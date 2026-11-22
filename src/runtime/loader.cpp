@@ -1,6 +1,7 @@
 #include "loader.h"
 
 #include "guest.h"
+#include "rpx_decompress.h"
 #include "trace.h"
 
 #include <fstream>
@@ -25,6 +26,17 @@ bool LoadRpx(const std::string& path, RpxInfo& info, std::string& error)
         return false;
     }
     std::vector<uint8_t> f((std::istreambuf_iterator<char>(in)), {});
+    // The game's own RPX (an installed release reads it from the title folder): decompress its sections first.
+    if (f.size() >= 0x12 && f[0x10] == 0xFE && f[0x11] == 0x01)
+    {
+        std::vector<uint8_t> plain;
+        if (!rpx::Decompress(f, plain, error))
+        {
+            error = path + ": " + error;
+            return false;
+        }
+        f.swap(plain);
+    }
     if (f.size() < 0x34 || Be16(f.data() + 0x12) != 20)
     {
         error = path + " is not a PowerPC ELF";
