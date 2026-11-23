@@ -380,6 +380,8 @@ int main(int argc, char** argv)
     std::string error;
     if (installed && !saveDirGiven)
         vfs::SetSaveDir(settings::Directory() + "save");
+    if (installed)
+        gpu::renderer::SetUserScreenshotDir(settings::Directory() + "screenshots");
     if (gameDir.empty() && installed && installedGame.empty() && !getenv("DT_GAME_DIR"))
     {
         // Not set up yet: the setup tool asks for the game and builds the module.

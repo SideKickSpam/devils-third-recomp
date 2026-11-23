@@ -110,5 +110,7 @@ void SetNoCull(bool noCull);
 void RequestScreenshot();
 // F12: the next frame's TV image into src/notes/screenshots/ (the frame number is logged).
 void RequestUserScreenshot();
+// Where F12 screenshots go (default src/notes/screenshots, relative: the repository the game runs from).
+void SetUserScreenshotDir(const std::string& dir);
 void SetScreenshots(const std::string& dir, const std::vector<uint64_t>& frames, uint64_t every, bool window);
 } // namespace gpu::renderer

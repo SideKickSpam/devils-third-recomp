@@ -3731,8 +3731,10 @@ std::vector<uint8_t> Readback(Image& img, VkImageAspectFlags aspect, uint32_t mi
 }
 
 // F12 (host/window.cpp): the TV image at the internal resolution, saved as src/notes/screenshots/<date>_<time>_frame<N>.png
-// beside the repository the game runs from (gitignored), with the frame number in the log.
+// beside the repository the game runs from (gitignored), or in an installed release's screenshots folder, with the frame
+// number in the log.
 std::atomic<bool> gUserShot{ false };
+std::string gUserShotDir = "src/notes/screenshots";
 void SaveUserScreenshot(uint64_t frame)
 {
     if (!gScan.image)
@@ -3741,11 +3743,11 @@ void SaveUserScreenshot(uint64_t frame)
     for (size_t i = 3; i < pixels.size(); i += 4)
         pixels[i] = 255;
     std::error_code ec;
-    std::filesystem::create_directories("src/notes/screenshots", ec);
+    std::filesystem::create_directories(gUserShotDir, ec);
     const std::time_t now = std::time(nullptr);
     char stamp[32];
     std::strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", std::localtime(&now));
-    const std::string path = "src/notes/screenshots/" + std::string(stamp) + "_frame" + std::to_string(frame) + ".png";
+    const std::string path = gUserShotDir + "/" + std::string(stamp) + "_frame" + std::to_string(frame) + ".png";
     // The PNG is compressed and written on a thread of its own: done here, it held the game up 400 ms per F12.
     const uint32_t w = gScan.width, h = gScan.height;
     std::thread([pixels = std::move(pixels), path, w, h, frame] {
@@ -5186,6 +5188,7 @@ void SetCapture(const std::string& dir, uint64_t frame)
 
 void RequestScreenshot() { gShotRequests++; }
 void RequestUserScreenshot() { gUserShot = true; }
+void SetUserScreenshotDir(const std::string& dir) { gUserShotDir = dir; }
 
 void SetScreenshots(const std::string& dir, const std::vector<uint64_t>& frames, uint64_t every, bool window)
 {
