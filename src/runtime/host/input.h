@@ -116,4 +116,6 @@ bool AddScriptedPress(const std::string& spec);
 // the bindings as a real controller's do. BUTTONS is a '+'-separated list of SDL gamepad button names (a = south,
 // b = east, x = west, y = north, start, back, dpup, dpdown, dpleft, dpright, leftshoulder, rightshoulder...).
 bool AddPadPress(const std::string& spec);
+// Seconds since DT_TEST_TIMED_FROM's frame (timed scripted presses), or -1 before it (testing).
+double TimedSeconds();
 } // namespace host::input

@@ -28,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1702,6 +1703,19 @@ void NoteSubtitle(uint64_t tick, float x, float y, float height, float gameWidth
     // changed in the middle of a frame's lines, and the half collected sets shown (1, 2 or 5 of 10 lines) made the text
     // blink for a frame at a time, which read as the picture behind it flickering)
     const uint64_t frame = tick;
+    // DT_LOG_SUB_TIMES (testing): each distinct line once, when it first appears, as a hash and its length (no text), to
+    // compare when lines come in different runs (a cutscene's pace at different frame rates).
+    static const bool logTimes = getenv("DT_LOG_SUB_TIMES") != nullptr;
+    if (logTimes && (rgba & 0xFFFFFF00u) != 0)  // (the black outline copies are skipped)
+    {
+        static std::set<uint64_t> seen;
+        static const auto start = std::chrono::steady_clock::now();
+        const uint64_t h = std::hash<std::string>{}(text);
+        std::lock_guard lock(gSubMutex);
+        if (seen.insert(h).second)
+            dtlog::Important("[subs] line %016llx (%zu bytes) at %.2f s\n", (unsigned long long)h, text.size(),
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    }
     std::lock_guard lock(gSubMutex);
     // A new frame, or a new pass over the same frame (the game can draw twice between presents: during movies), which
     // starts again with a line already drawn at that place in that colour.

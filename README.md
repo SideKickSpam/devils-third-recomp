@@ -43,7 +43,9 @@ seconds). Your settings, saves and shader cache are kept.
 
 ## Features
 
-- **Frame rate:** 50 fps (the original's cap), 60, 120, 144, 240 or unlimited. Game speed stays correct.
+- **Frame rate:** 50 fps (the original's cap), 60, 120, 144, 240 or unlimited. The game was made for a fixed 50 fps;
+  dt-port corrects the parts of it that counted frames instead of time, so movement, combat, enemies, physics and
+  cutscenes run at the same speed at any frame rate.
 - **Resolution:** the game renders at 720p, 1080p, 1440p, 4K or a custom scale, letterboxed to 16:9. Higher-quality
   shadows are available.
 - **Display:** windowed, borderless or exclusive fullscreen (Alt+Enter or F11); vsync off, on or mailbox.
@@ -67,7 +69,6 @@ seconds). Your settings, saves and shader cache are kept.
   remembered for next time.
 - Very busy areas may drop below the frame rate you chose on slower CPUs. The game's own rendering thread is the
   limit there.
-- Above 60 fps, physics, melee timing and some animations have not been fully checked yet.
 - Button names in the game's text are rewritten for your controller or keyboard in **English only**.
 - A rare crash at the start of a movie has been seen once. If it happens to you, please report it with the session
   log (see below).

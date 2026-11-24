@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <mutex>
 #include <set>
 #include <tuple>
@@ -83,6 +84,8 @@ std::map<SDL_JoystickID, SDL_Gamepad*> gPads;
 struct Press
 {
     uint64_t frame, frames;
+    bool timed;           // "t<seconds>:...:<seconds>": wall-clock seconds from DT_TEST_TIMED_FROM's frame (testing)
+    double start, length;
     uint32_t buttons;
     float leftX, leftY, rightX, rightY;  // stick deflection held with the buttons
 };
@@ -100,6 +103,7 @@ std::atomic<uint32_t> gGameButtons{ 0 };  // what the game was given at the last
 std::atomic<uint32_t> gHeld{ 0 };           // the buttons held at the last Read, before masking
 std::atomic<uint32_t> gMasked{ 0 };         // MaskHeld: hidden from the game until released
 uint32_t gScriptedNow = 0;
+std::optional<std::chrono::steady_clock::time_point> timedStart;  // DT_TEST_TIMED_FROM's frame (testing)
 std::atomic<int> gActive{ int(Device::Keyboard) };
 std::atomic<int> gLastPadType{ int(SDL_GAMEPAD_TYPE_STANDARD) };
 std::atomic<bool> gPadUsed{ false };
@@ -356,13 +360,18 @@ GamePad Read(uint64_t frame)
     if (kx && ky)
         kx *= 0.7071f, ky *= 0.7071f;
     p.leftX = kx, p.leftY = ky;
-    // Escaping a throw with the keyboard: the stick sweeps toward the keys' direction a fifth of the way a frame, so
-    // each A or D press moves it for several frames, as wiggling a stick does (SetThrowEscape).
+    // Escaping a throw with the keyboard: the stick sweeps toward the keys' direction a fifth of the way every 20 ms
+    // (a frame at the game's 50 fps; scaled to the time between reads at other rates), so each A or D press moves it
+    // over several frames, as wiggling a stick does (SetThrowEscape).
     {
         static float sweptX = 0, sweptY = 0;
+        static auto lastSweep = std::chrono::steady_clock::now();
+        const auto nowSweep = std::chrono::steady_clock::now();
+        const float step = 0.2f * std::clamp(std::chrono::duration<float>(nowSweep - lastSweep).count() / 0.02f, 0.0f, 1.0f);
+        lastSweep = nowSweep;
         if (gThrowEscape && ActiveDevice() == Device::Keyboard)
         {
-            sweptX += std::clamp(kx - sweptX, -0.2f, 0.2f), sweptY += std::clamp(ky - sweptY, -0.2f, 0.2f);
+            sweptX += std::clamp(kx - sweptX, -step, step), sweptY += std::clamp(ky - sweptY, -step, step);
             p.leftX = sweptX, p.leftY = sweptY;
         }
         else
@@ -412,8 +421,15 @@ GamePad Read(uint64_t frame)
     }
     p.buttons |= padButtons & ~VpadHome;  // the Guide button opens the settings menu instead
     uint32_t scripted = 0;
+    static const uint64_t timedFrom = getenv("DT_TEST_TIMED_FROM") ? strtoull(getenv("DT_TEST_TIMED_FROM"), nullptr, 10) : ~0ull;
+    if (!timedStart && frame >= timedFrom)
+    {
+        timedStart = std::chrono::steady_clock::now();
+        dtlog::Important("[input] timed presses start at frame %llu\n", (unsigned long long)frame);
+    }
+    const double timedNow = timedStart ? std::chrono::duration<double>(std::chrono::steady_clock::now() - *timedStart).count() : -1;
     for (const Press& s : gScript)
-        if (frame >= s.frame && frame < s.frame + s.frames)
+        if (s.timed ? timedNow >= s.start && timedNow < s.start + s.length : frame >= s.frame && frame < s.frame + s.frames)
         {
             scripted |= s.buttons;
             p.leftX += s.leftX, p.leftY += s.leftY, p.rightX += s.rightX, p.rightY += s.rightY;
@@ -748,7 +764,7 @@ bool AddScriptedPress(const std::string& spec)
     static const std::map<std::string, uint32_t> names = { { "a", VpadA }, { "b", VpadB }, { "x", VpadX },
         { "y", VpadY }, { "l", VpadL }, { "r", VpadR }, { "zl", VpadZL }, { "zr", VpadZR }, { "plus", VpadPlus },
         { "start", VpadPlus }, { "minus", VpadMinus }, { "home", VpadHome }, { "up", VpadUp }, { "down", VpadDown },
-        { "left", VpadLeft }, { "right", VpadRight } };
+        { "left", VpadLeft }, { "right", VpadRight }, { "lclick", VpadStickL }, { "rclick", VpadStickR } };
     // Stick directions at full deflection: l/r stick, then up/down/left/right.
     static const std::map<std::string, std::pair<int, std::pair<float, float>>> sticks = {
         { "lup", { 0, { 0, 1 } } }, { "ldown", { 0, { 0, -1 } } }, { "lleft", { 0, { -1, 0 } } }, { "lright", { 0, { 1, 0 } } },
@@ -760,8 +776,17 @@ bool AddScriptedPress(const std::string& spec)
     Press p{};
     try
     {
-        p.frame = std::stoull(spec.substr(0, c1));
-        p.frames = c2 == std::string::npos ? 6 : std::stoull(spec.substr(c2 + 1));
+        if (spec[0] == 't')
+        {
+            p.timed = true;
+            p.start = std::stod(spec.substr(1, c1 - 1));
+            p.length = c2 == std::string::npos ? 0.1 : std::stod(spec.substr(c2 + 1));
+        }
+        else
+        {
+            p.frame = std::stoull(spec.substr(0, c1));
+            p.frames = c2 == std::string::npos ? 6 : std::stoull(spec.substr(c2 + 1));
+        }
     }
     catch (...)
     {
@@ -787,5 +812,9 @@ bool AddScriptedPress(const std::string& spec)
     std::lock_guard lock(gMutex);
     gScript.push_back(p);
     return true;
+}
+double TimedSeconds()
+{
+    return timedStart ? std::chrono::duration<double>(std::chrono::steady_clock::now() - *timedStart).count() : -1;
 }
 } // namespace host::input

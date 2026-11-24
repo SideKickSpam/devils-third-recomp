@@ -1,4 +1,5 @@
 // Hooks into the game's Scaleform GFx integration (the menus): see src/notes/m6_plan.md, stage 4.
+#include "frametie.h"
 #include "game_settings.h"
 #include "game_ui.h"
 #include "assets/coalesced.h"
@@ -786,8 +787,10 @@ void CinematicTick(uint32_t engine)
     const uint32_t world = ue3::Call(engine, "GetCurrentWorldInfo").value_or(0);
     const uint32_t pc = world ? ue3::Call(world, "GetALocalPlayerController").value_or(0) : 0;
     const bool cinematic = pc && ue3::GetBool(pc, "bCinematicMode").value_or(false);
+    static const auto since = std::chrono::steady_clock::now();
     if (gCinematic.exchange(cinematic) != cinematic)
-        dtlog::Important("[ui] cinematic mode %s\n", cinematic ? "on" : "off");
+        dtlog::Important("[ui] cinematic mode %s (%.2f s)\n", cinematic ? "on" : "off",
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count());
 }
 
 // Mouse look speed: with the keyboard and mouse in gameplay, the game's turn speeds are host::input::MouseLookBoost times
@@ -846,6 +849,89 @@ void MouseSpeedTick(uint32_t engine)
 }
 
 // DT_TEST_STICK (environment, testing): log the view's turn rate (the local PlayerController's yaw) once a second.
+// DT_TEST_TRACE=<csv>: one row per gameplay tick with the wall time, the frame time, the view rotation and the pawn's
+// location, velocity and health, for comparing the game's behaviour at different frame rates (testing).
+void TraceTick(uint32_t engine)
+{
+    static FILE* out = nullptr;
+    static bool tried = false;
+    static auto start = std::chrono::steady_clock::now(), last = start;
+    if (!tried)
+    {
+        tried = true;
+        if (const char* path = getenv("DT_TEST_TRACE"))
+            if ((out = fopen(path, "w")))
+            {
+                fprintf(out, "tt,t,dt,pitch,yaw,x,y,z,vx,vy,vz,health,physics");
+                if (const char* props = getenv("DT_TEST_TRACE_PROPS"))  // "pc:Name,pawn:Name[:f],..."
+                    for (std::string list = props; !list.empty();)
+                    {
+                        const size_t comma = list.find(',');
+                        const std::string item = list.substr(0, comma);
+                        list = comma == std::string::npos ? "" : list.substr(comma + 1);
+                        if (!item.empty())
+                            fprintf(out, ",%s", item.c_str());
+                    }
+                fprintf(out, "\n");
+            }
+    }
+    if (!out)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    const double t = std::chrono::duration<double>(now - start).count(), dt = std::chrono::duration<double>(now - last).count();
+    last = now;
+    if (game_ui::Current() != game_ui::State::Gameplay)
+        return;
+    const uint32_t world = ue3::Call(engine, "GetCurrentWorldInfo").value_or(0);
+    const uint32_t pc = world ? ue3::Call(world, "GetALocalPlayerController").value_or(0) : 0;
+    const auto rotation = pc ? ue3::FindProperty(pc, "Rotation") : std::nullopt;
+    const uint32_t pawn = pc ? ue3::GetObject(pc, "Pawn").value_or(0) : 0;
+    if (!rotation || !pawn)
+        return;
+    auto f = [](uint32_t a) { return std::bit_cast<float>(guest::Read32(a)); };
+    const auto loc = ue3::FindProperty(pawn, "Location"), vel = ue3::FindProperty(pawn, "Velocity");
+    const auto health = ue3::FindProperty(pawn, "Health"), physics = ue3::FindProperty(pawn, "Physics");
+    fprintf(out, "%.4f,%.4f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%u", host::input::TimedSeconds(), t, dt, int(int16_t(guest::Read32(rotation->address) & 0xFFFF)),
+            int(guest::Read32(rotation->address + 4)), loc ? f(loc->address) : 0, loc ? f(loc->address + 4) : 0,
+            loc ? f(loc->address + 8) : 0, vel ? f(vel->address) : 0, vel ? f(vel->address + 4) : 0, vel ? f(vel->address + 8) : 0,
+            health ? int(guest::Read32(health->address)) : 0, physics ? guest::Read8(physics->address) : 0u);
+    if (const char* props = getenv("DT_TEST_TRACE_PROPS"))
+        for (std::string list = props; !list.empty();)
+        {
+            const size_t comma = list.find(',');
+            std::string item = list.substr(0, comma);
+            list = comma == std::string::npos ? "" : list.substr(comma + 1);
+            const bool asFloat = item.size() > 2 && item.compare(item.size() - 2, 2, ":f") == 0;
+            if (asFloat)
+                item.resize(item.size() - 2);
+            const size_t colon = item.find(':');
+            uint32_t object = item.compare(0, colon, "pawn") == 0 ? pawn : pc;
+            if (item.compare(0, colon, "cam") == 0)
+                object = ue3::GetObject(pc, "PlayerCamera").value_or(0);
+            // "+N": a 4-byte value N bytes into the property (a struct's member)
+            uint32_t offset = 0;
+            if (const size_t plus = item.find('+'); plus != std::string::npos)
+                offset = uint32_t(strtoul(item.c_str() + plus + 1, nullptr, 0)), item.resize(plus);
+            auto prop = colon == std::string::npos || !object ? std::nullopt : ue3::FindProperty(object, item.c_str() + colon + 1);
+            if (prop && offset)
+                prop->address += offset, prop->size = 4, prop->mask = 0;
+            if (!prop)
+                fprintf(out, ",");
+            else if (prop->mask)
+                fprintf(out, ",%d", (guest::Read32(prop->address) & prop->mask) ? 1 : 0);
+            else if (prop->size == 1)
+                fprintf(out, ",%u", guest::Read8(prop->address));
+            else if (asFloat)
+                fprintf(out, ",%.5g", f(prop->address));
+            else
+                fprintf(out, ",%d", int(guest::Read32(prop->address)));
+        }
+    fprintf(out, "\n");
+    static int rows = 0;
+    if (++rows % 200 == 0)
+        fflush(out);
+}
+
 void TurnRateTick(uint32_t engine)
 {
     static const bool on = getenv("DT_TEST_STICK") || getenv("DT_TEST_MOUSE");
@@ -2272,6 +2358,7 @@ void StartChapterTick(uint32_t engine)
 PPC_FUNC(EngineTick)
 {
     gEngineTicks.fetch_add(1, std::memory_order_relaxed);
+    frametie::Tick(float(ctx.f[1].ps0));
     {
         const PPCContext saved = ctx;
         game_settings::Tick(saved.r[3].u32);  // (first: a save queued by the closing page runs before the game's
@@ -2280,6 +2367,7 @@ PPC_FUNC(EngineTick)
         CinematicTick(saved.r[3].u32);
         MouseSpeedTick(saved.r[3].u32);
         TurnRateTick(saved.r[3].u32);
+        TraceTick(saved.r[3].u32);
         StartChapterTick(saved.r[3].u32);
         DumpTitleTick();
         DumpMovieTick();

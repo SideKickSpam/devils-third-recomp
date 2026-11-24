@@ -163,8 +163,9 @@ void GX2SetSwapInterval(uint32_t interval)
     if (interval != gSwapInterval)
     {
         const PPCContext* ctx = guest::CurrentContext();
-        dtlog::Important("[dt-port] swap interval %u at frame %llu (from %s)\n", interval, (unsigned long long)gFrames,
-            ctx ? trace::Describe(ctx->lr).c_str() : "?");
+        static const auto since = steady_clock::now();
+        dtlog::Important("[dt-port] swap interval %u at frame %llu, %.2f s (from %s)\n", interval, (unsigned long long)gFrames,
+            std::chrono::duration<double>(steady_clock::now() - since).count(), ctx ? trace::Describe(ctx->lr).c_str() : "?");
     }
     gSwapInterval = interval;
 }

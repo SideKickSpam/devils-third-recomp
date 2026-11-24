@@ -249,3 +249,32 @@ Remove every frame-rate dependency in the game code, then offer 120, 144, 240 an
 
   Code that assumes a fixed step is found by name (the symbols are present) and patched with a hook. The cap is
   never lowered to hide it.
+
+### Stage 8 findings (2026-11-22/23)
+How the game was checked (all testing hooks; see `frametie.cpp`, `src/tools/frametie_report.py`):
+- **Script accumulation profile.** `DT_FRAMETIE_PROFILE=<csv>` hooks UnrealScript's `+=`, `-=`, `*=`, `++`, `--` and
+  `Lerp` natives (reimplemented: the left operand is evaluated as a reference, as the interpreter does) and records per
+  call site how often it runs, what it adds, and whether the variable carries its value from one tick to the next
+  (an accumulator, not a loop counter or a value rebuilt every tick). `DT_TEST_FPS=t:<cap>` (or `<tick>:<cap>`)
+  switches the cap live, so one run profiles both rates; `frametie_report.py LOW.csv HIGH.csv` lists sites that run
+  once a tick at both rates and add the same per call (frame-tied) against those whose amount follows the frame time.
+  `DT_FRAMETIE_DUMP=<text>` dumps a function's bytecode with the object pointers named (in memory every object
+  reference is an 8-byte slot, so offsets differ from the package's serialized script).
+- **Behaviour traces.** `--press t<seconds>:<buttons>:<seconds>` presses by wall-clock time from
+  `DT_TEST_TIMED_FROM=<frame>`; `DT_TEST_TRACE=<csv>` logs per tick the view rotation, the pawn's location, velocity
+  and health, and any properties named in `DT_TEST_TRACE_PROPS` (`pc:`, `pawn:`, `cam:`; `+N` for a struct member,
+  `:f` for floats). `build/ft-timed.sh NAME CAP` (untracked) runs Score Attack mission 2 that way.
+
+Results at 50 against 104-132 fps:
+- Most gameplay script already scales with the frame time (movement, health regeneration, recoil sway, the score
+  timer, effects, the camera's interpolation).
+- **Frame-tied, fixed** (`kFixes`: the site's amount scaled by dt / 0.02, at most 1; nothing changes at the 50 cap):
+  `DevilsThirdPlayerInput.PlayerInput`'s `bRunHold++`, `bDodgeHold++` and `bSprintDelay--` (tap = dodge, hold = run:
+  at 104 fps a 2 s hold counted 185 instead of 100; fixed: 100 at both), and
+  `DevilsThirdPlayerPawn.UpdateThrowEscapeCount`'s `m_ThrowEscapeCount += 2` per tick a stick moved (keyed by the
+  variable's name). The keyboard's throw-escape stick sweep (ours) moved 0.2 a frame; now 0.2 per 20 ms.
+- **Measured equal**: walking (601 units/s), the melee combo's lunges (same times, distance within 1-3%), the heavy
+  attack, the dodge's arc and landing (same peak height and time), camera turn rate, recoil kick and its snap back.
+- **Physics**: UE3 gives PhysX each frame's time in equal fixed sub-steps of at most 0.01 s (`setTiming`, logged as
+  `[physics]`); the simulated time equals wall time at every rate.
+- **AI**: `AD3AI::UpdatePawnRotation`'s only constant is a 0.033 s lead on the target's velocity (a time, not a step).

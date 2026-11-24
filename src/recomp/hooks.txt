@@ -35,3 +35,36 @@ execIsConsoleBuild__10AWorldInfoFR6FFramePv
 
 # The engine's exit request (the PC title menu's Exit, shown in keyboard mode): dt-port quits (gfx_hooks.cpp).
 appRequestExit__FUi
+
+# UnrealScript's accumulating operators (+=, -=, *=, ++, --, Lerp): profiled per call site, and scaled to the frame time
+# at sites that add a constant per tick, so the game keeps its 50 Hz behaviour at higher frame rates (frametie.cpp).
+execAddEqual_FloatFloat__7UObjectFR6FFramePv
+execSubtractEqual_FloatFloat__7UObjectFR6FFramePv
+execMultiplyEqual_FloatFloat__7UObjectFR6FFramePv
+execAddEqual_IntInt__7UObjectFR6FFramePv
+execSubtractEqual_IntInt__7UObjectFR6FFramePv
+execAddEqual_ByteByte__7UObjectFR6FFramePv
+execSubtractEqual_ByteByte__7UObjectFR6FFramePv
+execAddAdd_PreInt__7UObjectFR6FFramePv
+execSubtractSubtract_PreInt__7UObjectFR6FFramePv
+execAddAdd_Int__7UObjectFR6FFramePv
+execSubtractSubtract_Int__7UObjectFR6FFramePv
+execAddAdd_PreByte__7UObjectFR6FFramePv
+execSubtractSubtract_PreByte__7UObjectFR6FFramePv
+execAddAdd_Byte__7UObjectFR6FFramePv
+execSubtractSubtract_Byte__7UObjectFR6FFramePv
+execAddEqual_VectorVector__7UObjectFR6FFramePv
+execSubtractEqual_VectorVector__7UObjectFR6FFramePv
+execMultiplyEqual_VectorFloat__7UObjectFR6FFramePv
+execAddEqual_RotatorRotator__7UObjectFR6FFramePv
+execSubtractEqual_RotatorRotator__7UObjectFR6FFramePv
+execLerp__7UObjectFR6FFramePv
+
+# PhysX's scene timing and step, logged to check physics against the frame rate (frametie.cpp).
+setTiming__7NpSceneFfUi16NxTimeStepMethod
+simulate__7NpSceneFf
+
+# UnrealScript's random numbers: call sites counted per second in the frametie profile (a roll made every tick is
+# more likely to succeed per second at higher frame rates).
+execFRand__7UObjectFR6FFramePv
+execRand__7UObjectFR6FFramePv
